@@ -19,6 +19,28 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 ROOT = Path(__file__).resolve().parent
 MAX_ATTEMPTS = 6
+WIDTH, HEIGHT = 1600, 900
+MAX_BYTES = 5 * 1024 * 1024
+CHECKS = ('overflow_ok', 'ocr_ok', 'aspect_ok', 'size_ok', 'safe_area_ok')
+
+
+def finalize_png(path, background):
+    """Fit the entire export without cropping, then validate the saved PNG."""
+    with Image.open(path) as original:
+        fitted = ImageOps.contain(original.convert('RGBA'), (WIDTH, HEIGHT),
+                                 Image.Resampling.LANCZOS)
+        canvas = Image.new('RGBA', (WIDTH, HEIGHT), tuple(background))
+        canvas.alpha_composite(fitted, ((WIDTH - fitted.width) // 2,
+                                      (HEIGHT - fitted.height) // 2))
+        canvas.convert('RGB').save(path, format='PNG', optimize=True)
+    with Image.open(path) as saved:
+        width, height = saved.size
+    size = path.stat().st_size
+    return dict(width=width, height=height, bytes=size,
+                aspect_ok=0.75 <= width / height <= 2.0 and
+                          (width, height) == (WIDTH, HEIGHT),
+                size_ok=size < MAX_BYTES)
+
 
 
 def words(value):
@@ -54,12 +76,22 @@ def ocr(path, expected):
 DOM_CHECK = r'''card => {
     const bounds = card.getBoundingClientRect();
     const failures = [];
+    const safeFailures = [];
+    const inset = {left: bounds.left + bounds.width * .06,
+        right: bounds.right - bounds.width * .06,
+        top: bounds.top + bounds.height * .06,
+        bottom: bounds.bottom - bounds.height * .06};
+    const safe = r => r.left >= inset.left && r.right <= inset.right &&
+        r.top >= inset.top && r.bottom <= inset.bottom;
+    const rectJSON = r => ({left: r.left - bounds.left, top: r.top - bounds.top,
+        width: r.width, height: r.height});
+    let textCount = 0;
     const inside = r => r.left >= bounds.left - 0.5 &&
         r.top >= bounds.top - 0.5 && r.right <= bounds.right + 0.5 &&
         r.bottom <= bounds.bottom + 0.5;
     // Include every element with direct text, plus its ancestors up to the card.
     const targets = new Set();
-    for (const el of card.querySelectorAll('*')) {
+    for (const el of [card, ...card.querySelectorAll('*')]) {
         if ([...el.childNodes].some(n => n.nodeType === Node.TEXT_NODE && n.textContent.trim())) {
             for (let p = el; p && card.contains(p); p = p.parentElement) targets.add(p);
         }
@@ -67,6 +99,20 @@ DOM_CHECK = r'''card => {
     for (const el of targets) {
         const s = getComputedStyle(el), r = el.getBoundingClientRect();
         const reasons = [];
+        const textNodes = [...el.childNodes].filter(n =>
+            n.nodeType === Node.TEXT_NODE && n.textContent.trim());
+        if (textNodes.length) {
+            textCount++;
+            if (!safe(r)) safeFailures.push({tag: el.tagName,
+                reason: 'element outside safe area', rect: rectJSON(r)});
+            for (const node of textNodes) {
+                const range = document.createRange(); range.selectNodeContents(node);
+                for (const rect of range.getClientRects()) {
+                    if (!safe(rect)) safeFailures.push({tag: el.tagName,
+                        reason: 'text outside safe area', rect: rectJSON(rect)});
+                }
+            }
+        }
         if (el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight)
             reasons.push('scroll overflow');
         if (s.textOverflow === 'ellipsis') reasons.push('ellipsis');
@@ -81,7 +127,10 @@ DOM_CHECK = r'''card => {
         }
         if (reasons.length) failures.push({tag: el.tagName, reasons});
     }
-    return {ok: targets.size > 0 && failures.length === 0, failures};
+    return {ok: targets.size > 0 && failures.length === 0, failures,
+        safe_area_ok: textCount > 0 && safeFailures.length === 0,
+        safe_area_details: {inset_x: bounds.width * .06, inset_y: bounds.height * .06,
+            text_elements: textCount, failures: safeFailures}};
 }'''
 
 
@@ -133,12 +182,19 @@ def render(args, report):
                 el.style.cssText = 'font: 16px/1.6 sans-serif; color: #666; margin-top: 12px; width: 100%; white-space: pre-wrap; overflow-wrap: anywhere';
                 author.after(el);
             }''', args.source)
+            card.evaluate("""card => {
+                Object.assign(card.style, {width: '800px', height: '450px',
+                    minWidth: '800px', maxWidth: '800px', minHeight: '450px',
+                    maxHeight: '450px', boxSizing: 'border-box', flexShrink: '0',
+                    padding: '48px 64px'});
+            }""")
             page.evaluate('document.fonts.ready')
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 report['tentativas'] = attempt
                 if attempt > 1:
                     card.evaluate('''(card, attempt) => {
-                        card.style.padding = Math.max(16, 64 - (attempt - 1) * 10) + 'px';
+                        card.style.padding = Math.max(27, 48 - (attempt - 1) * 5) + 'px ' +
+                            Math.max(48, 64 - (attempt - 1) * 4) + 'px';
                         for (const el of card.querySelectorAll('blockquote, cite, [data-render-source]')) {
                             if (!el.dataset.initialSize) el.dataset.initialSize = getComputedStyle(el).fontSize;
                             el.style.fontSize = parseFloat(el.dataset.initialSize) * Math.pow(.9, attempt - 1) + 'px';
@@ -151,6 +207,17 @@ def render(args, report):
                 dom = card.evaluate(DOM_CHECK)
                 report['overflow_ok'] = dom['ok']
                 report['overflow_details'] = dom['failures']
+                report['safe_area_ok'] = dom['safe_area_ok']
+                report['safe_area_details'] = dom['safe_area_details']
+                background = card.evaluate("""card => {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = canvas.height = 1;
+                    const ctx = canvas.getContext('2d');
+                    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, 1, 1);
+                    ctx.fillStyle = getComputedStyle(card).backgroundColor;
+                    ctx.fillRect(0, 0, 1, 1);
+                    return [...ctx.getImageData(0, 0, 1, 1).data];
+                }""")
                 try:
                     page.wait_for_function('document.querySelector("[aria-label=\\"Export options\\"]")?.getAttribute("aria-busy") !== "true"')
                     page.get_by_role('button', name='Export options').click()
@@ -166,12 +233,13 @@ def render(args, report):
                     page.keyboard.press('Escape')
                     card.screenshot(path=str(path), animations='disabled')
                     report['export_method'] = 'card-screenshot'
+                report.update(finalize_png(path, background))
                 missing, _ = ocr(path, expected)
                 report['palavras_faltantes'] = missing
                 report['ocr_ok'] = not missing
-                if report['overflow_ok'] and report['ocr_ok']:
+                if all(report[key] is True for key in CHECKS):
                     return 0
-                print(f'Tentativa {attempt}: overflow_ok={dom["ok"]}, faltantes={missing}', file=sys.stderr)
+                print(f'Tentativa {attempt}: validações={ {key: report[key] for key in CHECKS} }, faltantes={missing}', file=sys.stderr)
             return 1
         finally:
             browser.close()
@@ -188,7 +256,8 @@ def main():
     if not re.fullmatch(r'[A-Za-z0-9_-]+', args.n):
         parser.error('--n deve conter apenas letras, números, _ ou -')
     report = dict(path=str(ROOT / 'out' / f'conselho-{args.n}.png'), tentativas=0,
-                  overflow_ok=False, ocr_ok=False,
+                  overflow_ok=False, ocr_ok=False, aspect_ok=False, size_ok=False,
+                  safe_area_ok=False, safe_area_details={}, width=None, height=None, bytes=None,
                   palavras_faltantes=words(' '.join((args.text, args.author, args.source))))
     try:
         status = render(args, report)

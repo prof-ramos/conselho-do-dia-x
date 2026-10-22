@@ -78,7 +78,10 @@ def main(argv=None):
         text = matches[0]['text']
         rendered = run_json('render.py', ['--text', text, '--author', AUTHOR,
                             '--source', SOURCE, '--n', str(n), '--url', args.url])
-        if rendered.get('overflow_ok') is not True or rendered.get('ocr_ok') is not True or not isinstance(rendered.get('path'), str):
+        image_fields = ('width', 'height', 'bytes', 'overflow_ok', 'ocr_ok',
+                        'aspect_ok', 'size_ok', 'safe_area_ok')
+        if (any(rendered.get(key) is not True for key in image_fields[3:])
+                or not isinstance(rendered.get('path'), str)):
             raise ValueError('Renderização não passou nas validações de imagem.')
         post_text = f'{n}. {text}\n{AUTHOR}\n{SOURCE}'
         posted = run_json('post.py', ['--text', post_text, '--image', rendered['path'],
@@ -95,6 +98,7 @@ def main(argv=None):
         summary = {'ok': True, 'mode': 'publish' if args.publish else 'dry-run',
                    'n': n, 'image': rendered['path'], 'data': today,
                    'estado_atualizado': args.publish}
+        summary.update({key: rendered.get(key) for key in image_fields})
         if args.publish:
             summary.update(id=posted['id'], url=posted['url'])
         print(json.dumps(summary, ensure_ascii=False))
