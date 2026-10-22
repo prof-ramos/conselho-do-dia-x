@@ -1,0 +1,7 @@
+.env
+*.env
+out/
+__pycache__/
+estado.json
+cron.log
+log.jsonl
