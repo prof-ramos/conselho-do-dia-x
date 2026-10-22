@@ -125,6 +125,7 @@ def main(argv=None):
         if length > 280:
             raise ValueError('O texto deve ter até 280 caracteres pela contagem aproximada.')
         alt_text = args.alt_text.replace('\\n', '\n') if args.alt_text is not None else None
+        alt_text_ok = None
         if alt_text is not None and len(alt_text) > 1000:
             raise ValueError('O texto alternativo deve ter até 1000 caracteres.')
         payload = {'media': {'media_ids': ['<media_id>']}}
@@ -146,7 +147,8 @@ def main(argv=None):
         if not args.publish:
             output = {'mode': 'dry-run', 'ok': True, 'user': user, 'text': text, 'text_length': length,
                       'image': {'path': str(path), 'bytes': len(image)}, 'would_publish': False,
-                      'payload': payload, 'alt_text': alt_text, 'image_only': not bool(text)}
+                      'payload': payload, 'alt_text': alt_text, 'alt_text_ok': alt_text_ok,
+                      'image_only': not bool(text)}
         else:
             body, content_type = multipart(image)
             uploaded = request_json('POST', 'https://api.x.com/2/media/upload', credentials, body, content_type)
@@ -156,15 +158,23 @@ def main(argv=None):
                 raise ValueError('Resposta do upload sem identificador de mídia.')
             media_id = str(media_id)
             if alt_text is not None:
-                metadata = {'id': media_id, 'metadata': {'alt_text': {'text': alt_text}}}
-                request_json('POST', 'https://api.x.com/2/media/metadata', credentials,
-                             json.dumps(metadata).encode(), 'application/json')
+                try:
+                    metadata = {'id': media_id, 'metadata': {'alt_text': {'text': alt_text}}}
+                    request_json('POST', 'https://api.x.com/2/media/metadata', credentials,
+                                 json.dumps(metadata).encode(), 'application/json')
+                    alt_text_ok = True
+                except Exception:
+                    # Metadata is optional; never expose exception details or change the post.
+                    alt_text_ok = False
+                    print(redact('Aviso: falha ao definir o texto alternativo; publicação continuará.',
+                                 credentials), file=sys.stderr)
             payload['media']['media_ids'] = [media_id]
             body = json.dumps(payload).encode()
             posted = request_json('POST', 'https://api.x.com/2/tweets', credentials, body, 'application/json')
             post_id = posted['data']['id']
             output = {'mode': 'publish', 'id': post_id, 'url': f'https://x.com/{user["username"]}/status/{post_id}',
-                      'payload': payload, 'alt_text': alt_text, 'image_only': not bool(text)}
+                      'payload': payload, 'alt_text': alt_text, 'alt_text_ok': alt_text_ok,
+                      'image_only': not bool(text)}
         print(redact(json.dumps(output, ensure_ascii=False), credentials))
         return 0
     except urllib.error.HTTPError as error:
