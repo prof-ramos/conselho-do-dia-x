@@ -114,6 +114,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y tesseract-ocr tesseract-ocr-por
 
+      - name: Install and verify Playfair Display
+        if: steps.state.outputs.skip != 'true'
+        run: |
+          mkdir -p ~/.local/share/fonts
+          cp fonts/playfair-display/*.ttf ~/.local/share/fonts/
+          fc-cache -f
+          fc-list | grep -i 'Playfair Display'
+
       - name: Start app and wait for readiness
         if: steps.state.outputs.skip != 'true'
         run: |

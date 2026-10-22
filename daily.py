@@ -76,16 +76,24 @@ def main(argv=None):
         if len(matches) != 1 or not isinstance(matches[0].get('text'), str) or not matches[0]['text'].strip():
             raise ValueError('Conselho ausente, duplicado ou inválido para proximo.')
         text = matches[0]['text']
-        rendered = run_json('render.py', ['--text', text, '--author', AUTHOR,
+        rendered = run_json('render.py', ['--text', f'{n}. {text}', '--author', AUTHOR,
                             '--source', SOURCE, '--n', str(n), '--url', args.url])
         image_fields = ('width', 'height', 'bytes', 'overflow_ok', 'ocr_ok',
-                        'aspect_ok', 'size_ok', 'safe_area_ok')
+                        'aspect_ok', 'size_ok', 'safe_area_ok', 'font_ok')
         if (any(rendered.get(key) is not True for key in image_fields[3:])
                 or not isinstance(rendered.get('path'), str)):
             raise ValueError('Renderização não passou nas validações de imagem.')
         post_text = f'{n}. {text}\n{AUTHOR}\n{SOURCE}'
+        post_text_prefix_ok = post_text.startswith(f'{n}. ')
+        if not post_text_prefix_ok:
+            raise ValueError('Texto do post sem prefixo numérico.')
         posted = run_json('post.py', ['--text', post_text, '--image', rendered['path'],
                                     '--publish' if args.publish else '--dry-run'])
+        if not args.publish:
+            post_text_prefix_ok = (isinstance(posted.get('text'), str)
+                                   and posted['text'].startswith(f'{n}. '))
+            if not post_text_prefix_ok:
+                raise ValueError('Dry-run do post sem prefixo numérico.')
         if args.publish:
             published = True
             if not posted.get('id') or not posted.get('url'):
@@ -97,7 +105,8 @@ def main(argv=None):
                                       'data': today}, ensure_ascii=False) + '\n')
         summary = {'ok': True, 'mode': 'publish' if args.publish else 'dry-run',
                    'n': n, 'image': rendered['path'], 'data': today,
-                   'estado_atualizado': args.publish}
+                   'estado_atualizado': args.publish,
+                   'post_text_prefix_ok': post_text_prefix_ok}
         summary.update({key: rendered.get(key) for key in image_fields})
         if args.publish:
             summary.update(id=posted['id'], url=posted['url'])

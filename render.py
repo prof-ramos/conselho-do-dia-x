@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent
 MAX_ATTEMPTS = 6
 WIDTH, HEIGHT = 1600, 900
 MAX_BYTES = 5 * 1024 * 1024
-CHECKS = ('overflow_ok', 'ocr_ok', 'aspect_ok', 'size_ok', 'safe_area_ok')
+CHECKS = ('overflow_ok', 'ocr_ok', 'aspect_ok', 'size_ok', 'safe_area_ok', 'font_ok')
 
 
 def finalize_png(path, background):
@@ -134,6 +134,53 @@ DOM_CHECK = r'''card => {
 }'''
 
 
+def check_font(page, card):
+    details = card.locator('blockquote').evaluate("""el => {
+        const style = getComputedStyle(el);
+        return {family: style.fontFamily, style: style.fontStyle,
+            size: style.fontSize,
+            available: document.fonts.check('italic 400 48px "Playfair Display"')};
+    }""")
+    session = page.context.new_cdp_session(page)
+    try:
+        session.send('DOM.enable')
+        session.send('CSS.enable')
+        root = session.send('DOM.getDocument')['root']['nodeId']
+        node = session.send('DOM.querySelector', {
+            'nodeId': root, 'selector': '.quote-card blockquote'})['nodeId']
+        details['platform_fonts'] = session.send(
+            'CSS.getPlatformFontsForNode', {'nodeId': node})['fonts']
+    finally:
+        session.detach()
+    first = details['family'].split(',')[0].strip().strip("\"'")
+    ok = (first == 'Playfair Display' and details['style'] == 'italic'
+          and details['available'] is True
+          and any('Playfair Display' in font['familyName']
+                  and font.get('glyphCount', 0) > 0
+                  for font in details['platform_fonts']))
+    return ok, details
+
+
+def enlarge_quote(card):
+    """Find the largest fitting quote, capped at 110 px in the 2x export."""
+    quote = card.locator('blockquote')
+    initial = quote.evaluate('el => parseFloat(getComputedStyle(el).fontSize)')
+    dom = card.evaluate(DOM_CHECK)
+    if initial >= 55 or not (dom['ok'] and dom['safe_area_ok']):
+        return
+    low, high = initial, 55.0
+    # Quarter-CSS-pixel precision; author and source sizes stay untouched.
+    while high - low > .25:
+        candidate = (low + high) / 2
+        quote.evaluate('(el, size) => el.style.fontSize = size + "px"', candidate)
+        dom = card.evaluate(DOM_CHECK)
+        if dom['ok'] and dom['safe_area_ok']:
+            low = candidate
+        else:
+            high = candidate
+    quote.evaluate('(el, size) => el.style.fontSize = size + "px"', low)
+
+
 def render(args, report):
     expected = Counter(words(' '.join((args.text, args.author, args.source))))
     parts = urlsplit(args.url)
@@ -188,7 +235,9 @@ def render(args, report):
                     maxHeight: '450px', boxSizing: 'border-box', flexShrink: '0',
                     padding: '48px 64px'});
             }""")
-            page.evaluate('document.fonts.ready')
+            page.evaluate('async () => { await document.fonts.ready; }')
+            page.wait_for_timeout(600)
+            enlarge_quote(card)
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 report['tentativas'] = attempt
                 if attempt > 1:
@@ -204,6 +253,8 @@ def render(args, report):
                     }''', attempt)
                 page.wait_for_timeout(600)  # App padding transition is 400 ms.
                 page.evaluate('document.activeElement?.blur()')
+                page.evaluate('async () => { await document.fonts.ready; }')
+                report['font_ok'], report['font_details'] = check_font(page, card)
                 dom = card.evaluate(DOM_CHECK)
                 report['overflow_ok'] = dom['ok']
                 report['overflow_details'] = dom['failures']
@@ -257,7 +308,7 @@ def main():
         parser.error('--n deve conter apenas letras, números, _ ou -')
     report = dict(path=str(ROOT / 'out' / f'conselho-{args.n}.png'), tentativas=0,
                   overflow_ok=False, ocr_ok=False, aspect_ok=False, size_ok=False,
-                  safe_area_ok=False, safe_area_details={}, width=None, height=None, bytes=None,
+                  safe_area_ok=False, safe_area_details={}, font_ok=False, font_details={}, width=None, height=None, bytes=None,
                   palavras_faltantes=words(' '.join((args.text, args.author, args.source))))
     try:
         status = render(args, report)

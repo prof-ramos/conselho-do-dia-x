@@ -134,7 +134,7 @@ def main(argv=None):
         result = request_json('GET', 'https://api.x.com/2/users/me?user.fields=username,name', credentials)
         user = {key: result['data'][key] for key in ('id', 'username', 'name')}
         if not args.publish:
-            output = {'mode': 'dry-run', 'ok': True, 'user': user, 'text_length': length,
+            output = {'mode': 'dry-run', 'ok': True, 'user': user, 'text': text, 'text_length': length,
                       'image': {'path': str(path), 'bytes': len(image)}, 'would_publish': False}
         else:
             body, content_type = multipart(image)
