@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publica texto e PNG no X com OAuth 1.0a e biblioteca padrão."""
+"""Publica PNG com texto opcional no X com OAuth 1.0a e biblioteca padrão."""
 import argparse
 import base64
 import hashlib
@@ -107,7 +107,8 @@ def redact(message, credentials):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--text', required=True, help=r'Texto; a sequência literal \n vira quebra de linha.')
+    parser.add_argument('--text', default='', help=r'Texto; a sequência literal \n vira quebra de linha.')
+    parser.add_argument('--alt-text', help=r'Texto alternativo (até 1000 caracteres); \n vira quebra de linha.')
     parser.add_argument('--image', required=True, help='Caminho de um PNG de até 5 MiB.')
     parser.add_argument('--env-file', default=os.environ.get('X_ENV_FILE') or str(Path(__file__).resolve().parent / '.env'))
     mode = parser.add_mutually_exclusive_group()
@@ -118,8 +119,17 @@ def main(argv=None):
     try:
         text = args.text.replace('\\n', '\n')
         length = text_length(text)
-        if not text.strip() or length > 280:
-            raise ValueError('O texto deve ser não vazio e ter até 280 caracteres pela contagem aproximada.')
+        if not text.strip():
+            text = ''
+            length = 0
+        if length > 280:
+            raise ValueError('O texto deve ter até 280 caracteres pela contagem aproximada.')
+        alt_text = args.alt_text.replace('\\n', '\n') if args.alt_text is not None else None
+        if alt_text is not None and len(alt_text) > 1000:
+            raise ValueError('O texto alternativo deve ter até 1000 caracteres.')
+        payload = {'media': {'media_ids': ['<media_id>']}}
+        if text:
+            payload['text'] = text
         path = Path(args.image)
         try:
             with path.open('rb') as source:
@@ -135,7 +145,8 @@ def main(argv=None):
         user = {key: result['data'][key] for key in ('id', 'username', 'name')}
         if not args.publish:
             output = {'mode': 'dry-run', 'ok': True, 'user': user, 'text': text, 'text_length': length,
-                      'image': {'path': str(path), 'bytes': len(image)}, 'would_publish': False}
+                      'image': {'path': str(path), 'bytes': len(image)}, 'would_publish': False,
+                      'payload': payload, 'alt_text': alt_text, 'image_only': not bool(text)}
         else:
             body, content_type = multipart(image)
             uploaded = request_json('POST', 'https://api.x.com/2/media/upload', credentials, body, content_type)
@@ -143,10 +154,17 @@ def main(argv=None):
             media_id = (data.get('id') if isinstance(data, dict) else None) or uploaded.get('id') or uploaded.get('media_id_string')
             if not media_id:
                 raise ValueError('Resposta do upload sem identificador de mídia.')
-            body = json.dumps({'text': text, 'media': {'media_ids': [str(media_id)]}}).encode()
+            media_id = str(media_id)
+            if alt_text is not None:
+                metadata = {'id': media_id, 'metadata': {'alt_text': {'text': alt_text}}}
+                request_json('POST', 'https://api.x.com/2/media/metadata', credentials,
+                             json.dumps(metadata).encode(), 'application/json')
+            payload['media']['media_ids'] = [media_id]
+            body = json.dumps(payload).encode()
             posted = request_json('POST', 'https://api.x.com/2/tweets', credentials, body, 'application/json')
             post_id = posted['data']['id']
-            output = {'mode': 'publish', 'id': post_id, 'url': f'https://x.com/{user["username"]}/status/{post_id}'}
+            output = {'mode': 'publish', 'id': post_id, 'url': f'https://x.com/{user["username"]}/status/{post_id}',
+                      'payload': payload, 'alt_text': alt_text, 'image_only': not bool(text)}
         print(redact(json.dumps(output, ensure_ascii=False), credentials))
         return 0
     except urllib.error.HTTPError as error:
