@@ -1,0 +1,194 @@
+name: Conselho do dia
+
+on:
+  schedule:
+    - cron: '3 11 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Generate and validate without publishing
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - '.github/workflows/daily.yml'
+      - '*.py'
+      - 'conselhos.json'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: conselho-do-dia
+  cancel-in-progress: false
+
+jobs:
+  daily:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Select mode
+        id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          PUBLISH_ENABLED: ${{ vars.PUBLISH_ENABLED }}
+        run: |
+          mode=dry-run
+          if [[ "$EVENT" == workflow_dispatch && "$DRY_RUN" == false ]] ||
+             [[ "$EVENT" == schedule && "$PUBLISH_ENABLED" == true ]]; then
+            mode=publish
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout this repository
+        uses: actions/checkout@v4
+
+      - name: Check same-day guard and snapshot state
+        id: state
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+        run: |
+          python3 - <<'PY'
+          from datetime import datetime
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+
+          path = Path('estado.json')
+          raw = path.read_bytes() if path.exists() else None
+          state = json.loads(raw) if raw is not None else {}
+          today = datetime.now(ZoneInfo('America/Sao_Paulo')).date().isoformat()
+          skip = os.environ['MODE'] == 'publish' and state.get('data_ultimo_envio') == today
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"skip={str(skip).lower()}\n")
+              output.write(f"before={hashlib.sha256(raw).hexdigest() if raw is not None else 'missing'}\n")
+          if skip:
+              Path('summary.json').write_text(json.dumps({
+                  'ok': True, 'mode': 'publish', 'skipped': True,
+                  'reason': 'Já publicado hoje.', 'data': today,
+              }, ensure_ascii=False) + '\n', encoding='utf-8')
+          PY
+
+      - name: Checkout serif-sh
+        if: steps.state.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: prof-ramos/serif-sh
+          ref: master
+          path: serif-sh
+          ssh-key: ${{ secrets.SERIF_SH_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        if: steps.state.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: ${{ hashFiles('serif-sh/package-lock.json') != '' && 'npm' || '' }}
+          cache-dependency-path: serif-sh/package-lock.json
+
+      - name: Install app dependencies
+        if: steps.state.outputs.skip != 'true'
+        working-directory: serif-sh
+        run: |
+          if [[ -f package-lock.json ]]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Setup Python
+        if: steps.state.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install rendering dependencies
+        if: steps.state.outputs.skip != 'true'
+        run: |
+          pip install playwright pillow
+          python -m playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-por
+
+      - name: Install and verify Playfair Display
+        if: steps.state.outputs.skip != 'true'
+        run: |
+          mkdir -p ~/.local/share/fonts
+          cp fonts/playfair-display/*.ttf ~/.local/share/fonts/
+          fc-cache -f
+          fc-list | grep -i 'Playfair Display'
+
+      - name: Start app and wait for readiness
+        if: steps.state.outputs.skip != 'true'
+        run: |
+          (cd serif-sh && npm run dev -- --port 5173 --host 127.0.0.1 > ../serif.log 2>&1 &)
+          deadline=$((SECONDS + 120))
+          until curl --fail --silent --max-time 2 http://127.0.0.1:5173/ > /dev/null; do
+            if (( SECONDS >= deadline )); then
+              echo 'serif-sh did not become ready within 120 seconds' >&2
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Run daily routine
+        if: steps.state.outputs.skip != 'true'
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          X_CONSUMER_KEY: ${{ secrets.X_CONSUMER_KEY }}
+          X_CONSUMER_SECRET: ${{ secrets.X_CONSUMER_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
+        run: python daily.py "--$MODE" > summary.json
+
+      - name: Print and append JSON summary
+        if: always()
+        run: |
+          if [[ -s summary.json ]]; then
+            cat summary.json
+            {
+              echo '```json'
+              cat summary.json
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Commit published state if changed
+        if: success() && steps.mode.outputs.mode == 'publish' && steps.state.outputs.skip != 'true'
+        env:
+          BEFORE: ${{ steps.state.outputs.before }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          [[ -f estado.json ]] || exit 0
+          after=$(sha256sum estado.json | cut -d ' ' -f 1)
+          [[ "$after" != "$BEFORE" ]] || exit 0
+          n=$(python -c 'import json; print(int(json.load(open("estado.json"))["ultimo_enviado"]))')
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f -- estado.json
+          if [[ -f log.jsonl ]]; then
+            git add -f -- log.jsonl
+          fi
+          git diff --cached --quiet && exit 0
+          git commit -m "[skip ci] estado: conselho $n"
+          git push origin "HEAD:refs/heads/$BRANCH"
+
+      - name: Upload PNGs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conselho-png
+          path: out/*.png
+          if-no-files-found: warn
+
+      - name: Upload app log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: serif-log
+          path: serif.log
+          if-no-files-found: warn
