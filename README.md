@@ -80,7 +80,7 @@ python3 daily.py --publish
 
 Opções: `--estado /caminho/estado.json`, `--conselhos /caminho/conselhos.json` e `--url http://127.0.0.1:5173`. Os caminhos padrão ficam no diretório do script; caminhos fornecidos são relativos ao diretório atual. O log fica ao lado do script.
 
-A imagem recebe o texto do conselho, autor e fonte. O post contém o número e o conselho na primeira linha, o autor na segunda e a fonte na terceira. Argumentos são passados diretamente, sem shell, com quebras de linha reais.
+A imagem recebe o texto do conselho, autor e fonte. O post contém somente a imagem, sem a chave `text` no payload. O texto alternativo contém o número e o conselho na primeira linha, o autor na segunda e a fonte na terceira. O resumo JSON inclui `image_only_ok` (payload sem `text` e com IDs de mídia) e `alt_text`. Argumentos são passados diretamente, sem shell, com quebras de linha reais.
 
 Em `--publish`, se `data_ultimo_envio` já for hoje em `America/Sao_Paulo`, termina sem renderizar nem publicar. Após sucesso, substitui o estado atomicamente com `proximo=n+1`, `ultimo_enviado=n` e a data de hoje, e acrescenta uma linha a `log.jsonl`. Falhas retornam código diferente de zero; a saída é JSON, sem credenciais. Ao terminar a lista, é necessário definir novos conselhos ou ajustar o estado.
 
