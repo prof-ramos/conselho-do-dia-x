@@ -126,7 +126,9 @@ def main(argv=None):
             raise ValueError('O texto deve ter até 280 caracteres pela contagem aproximada.')
         alt_text = args.alt_text.replace('\\n', '\n') if args.alt_text is not None else None
         alt_text_ok = None
-        if alt_text is not None and len(alt_text) > 1000:
+        if alt_text is None or not alt_text.strip():
+            raise ValueError('Texto alternativo não vazio é obrigatório.')
+        if len(alt_text) > 1000:
             raise ValueError('O texto alternativo deve ter até 1000 caracteres.')
         payload = {'media': {'media_ids': ['<media_id>']}}
         if text:
@@ -157,17 +159,10 @@ def main(argv=None):
             if not media_id:
                 raise ValueError('Resposta do upload sem identificador de mídia.')
             media_id = str(media_id)
-            if alt_text is not None:
-                try:
-                    metadata = {'id': media_id, 'metadata': {'alt_text': {'text': alt_text}}}
-                    request_json('POST', 'https://api.x.com/2/media/metadata', credentials,
-                                 json.dumps(metadata).encode(), 'application/json')
-                    alt_text_ok = True
-                except Exception:
-                    # Metadata is optional; never expose exception details or change the post.
-                    alt_text_ok = False
-                    print(redact('Aviso: falha ao definir o texto alternativo; publicação continuará.',
-                                 credentials), file=sys.stderr)
+            metadata = {'id': media_id, 'metadata': {'alt_text': {'text': alt_text}}}
+            request_json('POST', 'https://api.x.com/2/media/metadata', credentials,
+                         json.dumps(metadata).encode(), 'application/json')
+            alt_text_ok = True
             payload['media']['media_ids'] = [media_id]
             body = json.dumps(payload).encode()
             posted = request_json('POST', 'https://api.x.com/2/tweets', credentials, body, 'application/json')

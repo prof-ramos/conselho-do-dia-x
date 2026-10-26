@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Gera e publica um conselho por dia, com dry-run como padrão."""
 import argparse
+import fcntl
 from datetime import datetime
 import json
 import os
 from pathlib import Path
 import shutil
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -47,15 +49,46 @@ def run_json(script, arguments):
     return value
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--estado', type=Path, default=ROOT / 'estado.json')
-    parser.add_argument('--conselhos', type=Path, default=ROOT / 'conselhos.json')
-    parser.add_argument('--url', default='http://127.0.0.1:5173')
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument('--dry-run', action='store_true')
-    mode.add_argument('--publish', action='store_true')
-    args = parser.parse_args(argv)
+def pending_path(state_path):
+    return state_path.with_name('publication.pending.json')
+
+
+def prepare(state_path, n, today):
+    intent = {'attempt': secrets.token_hex(16), 'n': n, 'data': today, 'status': 'prepared'}
+    # Exclusive creation: a previous attempt must be reconciled, never overwritten.
+    with pending_path(state_path).open('x', encoding='utf-8') as target:
+        json.dump(intent, target, ensure_ascii=False)
+        target.write('\n')
+        target.flush()
+        os.fsync(target.fileno())
+    return intent
+
+
+def finish_publication(state_path, state, receipt):
+    n = receipt['n']
+    if (receipt.get('status') != 'confirmed' or not receipt.get('id') or not receipt.get('url')
+            or type(n) is not int or not isinstance(receipt.get('data'), str)):
+        raise ValueError('Tentativa sem recibo confirmado; conferir o X antes de repetir.')
+    if state.get('proximo') not in (n, n + 1):
+        raise ValueError('Recibo incompatível com o estado atual.')
+    log_path = state_path.with_name('log.jsonl')
+    records = [json.loads(line) for line in log_path.read_text(encoding='utf-8').splitlines()
+               if line.strip()] if log_path.exists() else []
+    existing = [record for record in records if record.get('n') == n]
+    if existing and any(record.get('id') != receipt['id'] for record in existing):
+        raise ValueError('Registro divergente; conferir o X antes de reconciliar.')
+    if not existing:
+        with log_path.open('a', encoding='utf-8') as log:
+            log.write(json.dumps({key: receipt[key] for key in ('n', 'id', 'url', 'data')},
+                                 ensure_ascii=False) + '\n')
+            log.flush()
+            os.fsync(log.fileno())
+    state.update(proximo=n + 1, ultimo_enviado=n, data_ultimo_envio=receipt['data'])
+    atomic_json(state_path, state)
+    pending_path(state_path).unlink()  # Last operation; interruption retains the barrier.
+
+
+def execute(args):
     published = False
     try:
         today = datetime.now(ZoneInfo('America/Sao_Paulo')).date().isoformat()
@@ -64,7 +97,16 @@ def main(argv=None):
         state = json.loads(args.estado.read_text(encoding='utf-8'))
         if not isinstance(state, dict):
             raise ValueError('Estado deve ser um objeto JSON.')
-        if args.publish and state.get('data_ultimo_envio') == today:
+        pending = pending_path(args.estado)
+        if args.recover:
+            receipt = json.loads(pending.read_text(encoding='utf-8'))
+            finish_publication(args.estado, state, receipt)
+            print(json.dumps({'ok': True, 'mode': 'recover', 'id': receipt['id'],
+                              'url': receipt['url'], 'n': receipt['n']}))
+            return 0
+        if (args.publish or args.prepare) and pending.exists() and not args.prepared_attempt:
+            raise ValueError('Tentativa pendente; conferir o X e reconciliar antes de repetir.')
+        if (args.publish or args.prepare) and state.get('data_ultimo_envio') == today:
             print(json.dumps({'ok': True, 'mode': 'publish', 'skipped': True,
                               'reason': 'Já publicado hoje.', 'data': today}, ensure_ascii=False))
             return 0
@@ -75,6 +117,19 @@ def main(argv=None):
         matches = [item for item in entries if isinstance(item, dict) and item.get('n') == n]
         if len(matches) != 1 or not isinstance(matches[0].get('text'), str) or not matches[0]['text'].strip():
             raise ValueError('Conselho ausente, duplicado ou inválido para proximo.')
+        if args.prepare:
+            intent = prepare(args.estado, n, today)
+            print(json.dumps({'ok': True, 'mode': 'prepare', **intent}))
+            return 0
+        intent = None
+        if args.publish:
+            if args.prepared_attempt:
+                intent = json.loads(pending.read_text(encoding='utf-8'))
+                if (intent.get('attempt') != args.prepared_attempt or intent.get('n') != n
+                        or intent.get('data') != today or intent.get('status') != 'prepared'):
+                    raise ValueError('Tentativa preparada incompatível ou já iniciada.')
+            else:
+                intent = prepare(args.estado, n, today)
         text = matches[0]['text']
         rendered = run_json('render.py', ['--text', f'{n}. {text}', '--author', AUTHOR,
                             '--source', SOURCE, '--n', str(n), '--url', args.url])
@@ -84,38 +139,67 @@ def main(argv=None):
                 or not isinstance(rendered.get('path'), str)):
             raise ValueError('Renderização não passou nas validações de imagem.')
         alt_text = f'{n}. {text}\n{AUTHOR}\n{SOURCE}'
+        if args.publish:
+            intent['status'] = 'sending'
+            atomic_json(pending, intent)
         posted = run_json('post.py', ['--alt-text', alt_text, '--image', rendered['path'],
                                     '--publish' if args.publish else '--dry-run'])
+        if args.publish:
+            published = bool(posted.get('id') and posted.get('url'))
+            if not published:
+                raise ValueError('Publicação sem id ou URL; confira o X antes de repetir.')
+            intent.update(status='confirmed', id=posted['id'], url=posted['url'])
+            atomic_json(pending, intent)  # Receipt survives state/log failures.
         payload = posted.get('payload')
         image_only_ok = (isinstance(payload, dict) and 'text' not in payload
                          and isinstance(payload.get('media'), dict)
                          and isinstance(payload['media'].get('media_ids'), list)
                          and bool(payload['media']['media_ids'])
                          and all(payload['media']['media_ids']))
-        if not image_only_ok:
-            raise ValueError('Payload do post deve conter mídia, sem texto.')
+        if not image_only_ok or (args.publish and posted.get('alt_text_ok') is not True):
+            raise ValueError('Publicação deve conter somente mídia e texto alternativo confirmado.')
         if args.publish:
-            published = True
-            if not posted.get('id') or not posted.get('url'):
-                raise ValueError('Publicação sem id ou URL; confira o X antes de repetir.')
-            state.update(proximo=n + 1, ultimo_enviado=n, data_ultimo_envio=today)
-            atomic_json(args.estado, state)
-            with (ROOT / 'log.jsonl').open('a', encoding='utf-8') as log:
-                log.write(json.dumps({'n': n, 'id': posted['id'], 'url': posted['url'],
-                                      'data': today}, ensure_ascii=False) + '\n')
+            finish_publication(args.estado, state, intent)
         summary = {'ok': True, 'mode': 'publish' if args.publish else 'dry-run',
                    'n': n, 'image': rendered['path'], 'data': today,
                    'estado_atualizado': args.publish,
                    'image_only_ok': image_only_ok, 'alt_text': posted.get('alt_text')}
         summary.update({key: rendered.get(key) for key in image_fields})
         if args.publish:
-            summary.update(id=posted['id'], url=posted['url'])
+            summary.update(id=posted['id'], url=posted['url'], alt_text_ok=posted['alt_text_ok'])
         print(json.dumps(summary, ensure_ascii=False))
         return 0
     except (OSError, ValueError, TypeError, KeyError):
-        print(json.dumps({'ok': False, 'error': 'Falha ao processar estado, conselho ou subprocesso.',
+        print(json.dumps({'ok': False,
+                          'error': 'Falha na rotina. Se houver publication.pending.json, conferir o X antes de repetir.',
                           'publicacao_confirmada': published}, ensure_ascii=False), file=sys.stderr)
         return 1
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--estado', type=Path, default=ROOT / 'estado.json')
+    parser.add_argument('--conselhos', type=Path, default=ROOT / 'conselhos.json')
+    parser.add_argument('--url', default='http://127.0.0.1:5173')
+    parser.add_argument('--prepared-attempt', help='ID preparado e persistido antes desta execução.')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--dry-run', action='store_true')
+    mode.add_argument('--publish', action='store_true')
+    mode.add_argument('--prepare', action='store_true', help='Registra intenção sem acessar o X.')
+    mode.add_argument('--recover', action='store_true', help='Reconcilia recibo confirmado sem publicar.')
+    args = parser.parse_args(argv)
+    if args.prepared_attempt and not args.publish:
+        parser.error('--prepared-attempt exige --publish')
+    if not (args.publish or args.prepare or args.recover):
+        return execute(args)
+    # Stable lock file, never unlinked: serializes local processes on Linux/macOS.
+    with args.estado.with_name('.publication.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(json.dumps({'ok': False, 'error': 'Outra rotina de publicação está em execução.'}), file=sys.stderr)
+            return 1
+        return execute(args)
 
 
 if __name__ == '__main__':

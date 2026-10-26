@@ -1,0 +1,6 @@
+# Versões da execução bem-sucedida do conselho 4 (2026-10-26), inclusive transitivas.
+greenlet==3.5.6
+pillow==13.0.0
+playwright==1.64.1
+pyee==14.0.0
+typing-extensions==4.16.0
