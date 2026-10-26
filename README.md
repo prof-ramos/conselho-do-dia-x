@@ -22,7 +22,8 @@ Clone e inicie o serif.sh em outro terminal:
 ```bash
 git clone https://github.com/prof-ramos/serif-sh
 cd serif-sh
-npm install && npm run dev -- --port 5173 --host 127.0.0.1
+git checkout abc59e082e476385326f7a7e840f08965f9e6f00
+npm ci && npm run dev -- --port 5173 --host 127.0.0.1
 ```
 
 Instale o OCR no Debian/Ubuntu:
@@ -43,7 +44,7 @@ No diretório deste projeto, de preferência em um ambiente virtual:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install playwright Pillow
+pip install -r requirements-render.txt
 python -m playwright install chromium
 ```
 
@@ -78,13 +79,43 @@ Para publicar:
 python3 daily.py --publish
 ```
 
-Opções: `--estado /caminho/estado.json`, `--conselhos /caminho/conselhos.json` e `--url http://127.0.0.1:5173`. Os caminhos padrão ficam no diretório do script; caminhos fornecidos são relativos ao diretório atual. O log fica ao lado do script.
+Opções: `--estado /caminho/estado.json`, `--conselhos /caminho/conselhos.json` e `--url http://127.0.0.1:5173`. Os caminhos padrão ficam no diretório do script; caminhos fornecidos são relativos ao diretório atual. O log e a pendência ficam no mesmo diretório de `--estado` (por padrão, ao lado do script).
 
 A imagem recebe o texto do conselho, autor e fonte. O post contém somente a imagem, sem a chave `text` no payload. O texto alternativo contém o número e o conselho na primeira linha, o autor na segunda e a fonte na terceira. O resumo JSON inclui `image_only_ok` (payload sem `text` e com IDs de mídia) e `alt_text`. Argumentos são passados diretamente, sem shell, com quebras de linha reais.
 
 Em `--publish`, se `data_ultimo_envio` já for hoje em `America/Sao_Paulo`, termina sem renderizar nem publicar. Após sucesso, substitui o estado atomicamente com `proximo=n+1`, `ultimo_enviado=n` e a data de hoje, e acrescenta uma linha a `log.jsonl`. Falhas retornam código diferente de zero; a saída é JSON, sem credenciais. Ao terminar a lista, é necessário definir novos conselhos ou ajustar o estado.
 
-Execute apenas uma instância por vez. A publicação no X e a gravação local não formam uma única transação: se houver interrupção após publicar e antes de salvar o estado, confira o X antes de repetir. Se o log falhar após salvar o estado, o estado continua avançado.
+A rotina usa um lock local e registra `publication.pending.json` antes de acessar o X em modo publicação. Uma tentativa pendente bloqueia novos envios, inclusive no mesmo dia. O recibo confirmado é salvo antes do log e do estado; a pendência só é removida depois de ambos serem persistidos. Uma falha no texto alternativo impede a criação do post.
+
+No GitHub Actions, a intenção é commitada e enviada a `main` **antes** do envio ao X. Se esse push falhar, não há publicação. Se o push final falhar, a intenção permanece no GitHub e impede repetir o post. O workflow tenta preservar o estado mesmo se a rotina falhar e disponibiliza `publication-recovery` como artefato. Não há repetição automática de chamadas de publicação.
+
+O fluxo só publica em `main`. PRs e pushes executam testes sem segredos; renderização e consulta da conta são executadas por agendamento ou despacho manual. `PUBLISH_ENABLED=true` habilita o envio agendado às 08h03 de São Paulo; o despacho manual continua com dry-run por padrão.
+
+### Recuperar uma tentativa interrompida
+
+1. Pare execuções concorrentes e confira o post na conta do X. Não apague a pendência nem use novamente `--prepared-attempt` para tentar resolver uma resposta incerta.
+2. Atualize o checkout de `main` e baixe o artefato `publication-recovery` da execução que falhou. Compare `attempt`, `n` e a data com a intenção do GitHub antes de usar o recibo do artefato. Preserve uma cópia dos arquivos atuais.
+3. Se o artefato contém `publication.pending.json` com `status=confirmed`, ID e URL correspondentes ao post verificado, copie **esse recibo** para o checkout e execute:
+
+   ```bash
+   python3 daily.py --recover
+   python3 ci_state.py 'reconciliar publicação confirmada'
+   ```
+
+   Isso reconcilia log e estado, remove a pendência e persiste o resultado sem acessar o X ou publicar. O log não recebe outra linha para o mesmo conselho/ID.
+4. Se não há recibo confirmado, a rotina para: a API pode ter aceitado o post antes de a conexão cair. Confira a conta e os logs antes de qualquer ação. Se o post existe, preencha o recibo com o ID/URL verificados e `status=confirmed`, preservando `attempt`, `n` e `data`, e use `--recover`. Se foi confirmado que não houve publicação, remova a pendência e faça commit/push dessa remoção antes de uma nova tentativa. **Ausência de resposta não comprova ausência de post.**
+
+O registro reduz duplicações, mas não cria uma transação entre Git e X. Checkouts independentes em computadores diferentes não compartilham o lock: centralize os envios no workflow; o uso direto de `post.py --publish` não possui a proteção da rotina diária.
+
+## Testes e versões
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Os testes usam diretórios temporários, Git local e respostas simuladas nas fronteiras com o X/renderizador. Não exigem credenciais nem publicam. Cobrem texto alternativo, payload só com imagem, falhas de gravação, respostas incertas, recuperação, lock local e rejeição de pushes.
+
+`requirements-render.txt` fixa dependências diretas e transitivas da execução validada do nº 4. O workflow fixa também o commit do `serif-sh`. Para atualizar, altere as versões/commit explicitamente, execute os testes e valide um despacho com `dry_run=true` antes do envio seguinte. Não é necessário instalar dependências de renderização para executar os testes.
 
 ## Agendamento
 

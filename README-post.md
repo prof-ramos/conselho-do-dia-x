@@ -21,7 +21,7 @@ Dry-run é o padrão. Valida texto opcional, texto alternativo e PNG e faz somen
 
 ```bash
 python3 post.py --alt-text 'Conselho\nAutor\nFonte' --image ./imagem.png
-python3 post.py --dry-run --text 'Prévia do post' --image ./imagem.png --env-file /caminho/arquivo.env
+python3 post.py --dry-run --text 'Prévia do post' --alt-text 'Descrição da imagem' --image ./imagem.png --env-file /caminho/arquivo.env
 ```
 
 Para publicar explicitamente (faz upload da imagem e depois cria o post):
@@ -30,7 +30,7 @@ Para publicar explicitamente (faz upload da imagem e depois cria o post):
 python3 post.py --publish --alt-text 'Conselho\nAutor\nFonte' --image ./imagem.png
 ```
 
-`--dry-run` e `--publish` são mutuamente exclusivos. `--image` é obrigatório; `--text` é opcional. Texto omitido, vazio ou só com espaços gera um post somente com imagem, sem a chave `text` no JSON. `--alt-text` aceita até 1000 caracteres. A sequência literal `\n` em ambos os textos é convertida em quebra de linha antes da validação.
+`--dry-run` e `--publish` são mutuamente exclusivos. `--image` é obrigatório; `--text` é opcional. Texto omitido, vazio ou só com espaços gera um post somente com imagem, sem a chave `text` no JSON. `--alt-text` é obrigatório, deve conter texto não vazio e aceita até 1000 caracteres. A sequência literal `\n` em ambos os textos é convertida em quebra de linha antes da validação.
 
 Ambos os modos limitam o texto opcional a 280 caracteres pela aproximação abaixo e exigem assinatura PNG válida e arquivo de até 5 MiB (5.242.880 bytes). A assinatura de oito bytes é verificada; o script não decodifica a imagem inteira.
 
@@ -38,4 +38,6 @@ A contagem é aproximada: URLs iniciadas por `http://` ou `https://` até o pró
 
 A saída de sucesso é JSON em stdout: no dry-run, contém `payload` com o JSON exato destinado a `POST /2/tweets` (ID substituído por `<media_id>`), `alt_text`, `image_only`, usuário, contagem do texto, caminho/tamanho da imagem e `would_publish: false`; na publicação, contém ID e URL do post. Erros são JSON em stderr e retornam código diferente de zero. As credenciais precisam permitir as operações solicitadas na API do X. Se o upload funcionar e a criação do post falhar, a mídia pode permanecer enviada; o script não repete operações automaticamente.
 
-Quando `--alt-text` é informado, após o upload e antes de criar o post, o script usa o helper OAuth `request_json` para enviar `POST https://api.x.com/2/media/metadata` com `{"id": "<media_id>", "metadata": {"alt_text": {"text": "..."}}}`. Falha nessa etapa impede a criação do post. A saída da publicação também inclui `payload`, `alt_text` e `image_only`.
+Após o upload e antes de criar o post, o script usa o helper OAuth `request_json` para enviar `POST https://api.x.com/2/media/metadata` com `{"id": "<media_id>", "metadata": {"alt_text": {"text": "..."}}}`. Falha nessa etapa impede a criação do post. A saída da publicação também inclui `payload`, `alt_text` e `image_only`.
+
+Para envio com proteção contra repetição e recuperação de falhas, use `daily.py --publish`, conforme o README principal. `post.py` é uma ferramenta de baixo nível e não mantém estado de tentativas.

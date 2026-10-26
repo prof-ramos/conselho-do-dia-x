@@ -5,3 +5,9 @@ __pycache__/
 estado.json
 cron.log
 log.jsonl
+
+.publication.lock
+publication.pending.json
+preparation.json
+summary.json
+.venv/
