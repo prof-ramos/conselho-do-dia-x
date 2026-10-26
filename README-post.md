@@ -21,7 +21,7 @@ Dry-run é o padrão. Valida texto opcional, texto alternativo e PNG e faz somen
 
 ```bash
 python3 post.py --alt-text 'Conselho\nAutor\nFonte' --image ./imagem.png
-python3 post.py --dry-run --text 'Prévia do post' --image ./imagem.png --env-file /caminho/arquivo.env
+python3 post.py --dry-run --text 'Prévia do post' --alt-text 'Descrição da imagem' --image ./imagem.png --env-file /caminho/arquivo.env
 ```
 
 Para publicar explicitamente (faz upload da imagem e depois cria o post):

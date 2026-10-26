@@ -3,6 +3,8 @@ import fcntl
 from datetime import datetime
 import io
 import json
+import os
+import stat
 from pathlib import Path
 import tempfile
 import unittest
@@ -196,6 +198,17 @@ class DailyTests(unittest.TestCase):
             self.assertEqual(self.run_daily('--publish')[0], 1)
         self.assertEqual(self.run_daily('--publish')[0], 1)
         self.assertEqual(len(self.sends), 1)
+
+    def test_directory_sync_failure_prevents_network(self):
+        original = os.fsync
+        def sync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError('directory sync failure')
+            return original(fd)
+        with patch.object(daily.os, 'fsync', side_effect=sync):
+            self.assertEqual(self.run_daily('--publish')[0], 1)
+        self.assertEqual(self.sends, [])
+        self.assertTrue((self.root / 'publication.pending.json').exists())
 
     def test_local_concurrent_invocation_is_rejected(self):
         with (self.root / '.publication.lock').open('a') as lock:

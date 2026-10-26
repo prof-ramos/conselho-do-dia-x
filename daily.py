@@ -18,6 +18,14 @@ AUTHOR = 'H. Jackson Brown, Jr.'
 SOURCE = 'Pequeno Manual de Instruções para a Vida'
 
 
+def sync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def atomic_json(path, value):
     temporary = None
     try:
@@ -29,6 +37,7 @@ def atomic_json(path, value):
             target.flush()
             os.fsync(target.fileno())
         os.replace(temporary, path)
+        sync_directory(path.parent)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
@@ -61,6 +70,7 @@ def prepare(state_path, n, today):
         target.write('\n')
         target.flush()
         os.fsync(target.fileno())
+    sync_directory(state_path.parent)
     return intent
 
 
@@ -85,7 +95,8 @@ def finish_publication(state_path, state, receipt):
             os.fsync(log.fileno())
     state.update(proximo=n + 1, ultimo_enviado=n, data_ultimo_envio=receipt['data'])
     atomic_json(state_path, state)
-    pending_path(state_path).unlink()  # Last operation; interruption retains the barrier.
+    pending_path(state_path).unlink()  # State and log are already durable.
+    sync_directory(state_path.parent)
 
 
 def execute(args):
