@@ -74,6 +74,37 @@ class PostTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
 
 
+class RunJsonTests(unittest.TestCase):
+    def test_failed_child_emits_only_safe_redacted_diagnostic(self):
+        credentials = {key: f'fixture-secret-{index}' for index, key in enumerate(post.KEYS)}
+        secrets_text = ' '.join(credentials.values())
+        failure = {'error': 'API error ' + secrets_text, 'status': 403,
+                   'headers': {'Authorization': 'private-header'},
+                   'body': json.dumps({'title': 'Forbidden', 'detail': secrets_text + 'x' * 250,
+                                       'type': 'about:blank', 'other': 'private-body'})}
+        child = daily.subprocess.CompletedProcess([], 1, stdout='private-stdout',
+            stderr='private-stderr\n' + json.dumps(failure) + '\ntrailing noise\n')
+        stderr = io.StringIO()
+        with patch.dict(os.environ, credentials), \
+                patch.object(daily.subprocess, 'run', return_value=child), \
+                contextlib.redirect_stderr(stderr):
+            with self.assertRaisesRegex(ValueError, r'^post.py falhou \(código 1\)\.$'):
+                daily.run_json('post.py', [])
+        lines = stderr.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith('diagnostico post.py: '))
+        diagnostic = json.loads(lines[0].split(': ', 1)[1])
+        self.assertEqual(diagnostic['status'], 403)
+        self.assertEqual(diagnostic['body']['title'], 'Forbidden')
+        self.assertEqual(set(diagnostic), {'error', 'status', 'body'})
+        self.assertEqual(set(diagnostic['body']), {'title', 'detail', 'type'})
+        self.assertLessEqual(len(diagnostic['body']['detail']), 200)
+        self.assertIn('[REDACTED]', diagnostic['error'])
+        for private in [*credentials.values(), 'private-header', 'private-body',
+                        'private-stdout', 'private-stderr', 'trailing noise']:
+            self.assertNotIn(private, stderr.getvalue())
+
+
 class DailyTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
