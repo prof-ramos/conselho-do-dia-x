@@ -48,6 +48,44 @@ def run_json(script, arguments):
                             capture_output=True, text=True, encoding='utf-8', cwd=ROOT)
     # Não repassar stdout/stderr dos filhos: podem conter dados sensíveis.
     if result.returncode:
+        for line in reversed(result.stderr.splitlines()):
+            try:
+                failure = json.loads(line)
+            except ValueError:
+                continue
+            diagnostic = {}
+            if isinstance(failure, dict):
+                credentials = sorted({os.environ[key] for key in (
+                    'X_CONSUMER_KEY', 'X_CONSUMER_SECRET',
+                    'X_ACCESS_TOKEN', 'X_ACCESS_TOKEN_SECRET') if os.environ.get(key)},
+                    key=len, reverse=True)
+
+                def safe_text(value):
+                    for secret in credentials:
+                        value = value.replace(secret, '[REDACTED]')
+                    return value[:200]
+
+                if isinstance(failure.get('error'), str):
+                    diagnostic['error'] = safe_text(failure['error'])
+                if type(failure.get('status')) in (int, float):
+                    status = failure['status']
+                    # Credenciais também não devem aparecer em valores numéricos.
+                    if all(secret not in str(status) for secret in credentials):
+                        if status == status and abs(status) != float('inf'):
+                            diagnostic['status'] = status
+                body = failure.get('body')
+                if isinstance(body, str):
+                    try:
+                        body = json.loads(body)
+                    except ValueError:
+                        body = None
+                if isinstance(body, dict):
+                    diagnostic['body'] = {key: safe_text(body[key])
+                                          for key in ('title', 'detail', 'type')
+                                          if isinstance(body.get(key), str)}
+            print(f'diagnostico {script}: ' + json.dumps(diagnostic, ensure_ascii=False),
+                  file=sys.stderr)
+            break
         raise ValueError(f'{script} falhou (código {result.returncode}).')
     try:
         value = json.loads(result.stdout.strip().splitlines()[-1])
