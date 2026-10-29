@@ -136,6 +136,20 @@ class DailyTests(unittest.TestCase):
             rc = daily.main(list(args))
         return rc, stdout.getvalue(), stderr.getvalue()
 
+    def test_render_reason_reaches_daily_error_without_credentials(self):
+        with patch.dict(os.environ, {'X_ACCESS_TOKEN': 'render-secret'}), \
+                patch.object(daily, 'run_json', side_effect=ValueError(
+                    'OCR: z. Olhe render-secret; faltantes: olhos')):
+            rc, out, err = self.run_daily('--dry-run', '--estado', str(self.state),
+                                          '--conselhos', str(self.root / 'conselhos.json'))
+        self.assertEqual(rc, 1)
+        error = json.loads(err)['error']
+        self.assertIn('OCR: z. Olhe', error)
+        self.assertIn('faltantes: olhos', error)
+        self.assertIn('[REDACTED]', error)
+        self.assertNotIn('render-secret', out + err)
+        self.assertEqual(self.sends, [])
+
     def test_timeout_leaves_barrier_and_retry_does_not_send(self):
         self.fail_post = True
         self.assertEqual(self.run_daily('--publish')[0], 1)

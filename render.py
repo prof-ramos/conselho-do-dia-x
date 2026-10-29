@@ -14,8 +14,6 @@ import tempfile
 import unicodedata
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from PIL import Image, ImageOps
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 ROOT = Path(__file__).resolve().parent
 MAX_ATTEMPTS = 6
@@ -26,6 +24,8 @@ CHECKS = ('overflow_ok', 'ocr_ok', 'aspect_ok', 'size_ok', 'safe_area_ok', 'font
 
 def finalize_png(path, background):
     """Fit the entire export without cropping, then validate the saved PNG."""
+    from PIL import Image, ImageOps
+
     with Image.open(path) as original:
         fitted = ImageOps.contain(original.convert('RGBA'), (WIDTH, HEIGHT),
                                  Image.Resampling.LANCZOS)
@@ -50,8 +50,20 @@ def words(value):
     return re.findall(r'[^\W_]+', value, flags=re.UNICODE)
 
 
+def advice_words(text):
+    """Exclude the initial list marker, including a misread numeral."""
+    return words(re.sub(r'^\s*(?:\d+|[^\W_])\s*[.):–—-]\s*', '', text))
+
+
+def missing_words(expected, observed):
+    """Compare content while preserving word multiplicities."""
+    return list((expected - Counter(advice_words(observed))).elements())
+
+
 def ocr(path, expected):
     """Use one complete OCR reading; preserve word multiplicities."""
+    from PIL import Image, ImageOps
+
     best_missing = list(expected.elements())
     best_text = ''
     with Image.open(path) as original, tempfile.TemporaryDirectory() as tmp:
@@ -65,7 +77,7 @@ def ocr(path, expected):
                 ['tesseract', str(prepared), 'stdout', '-l', 'por', '--psm', str(psm)],
                 capture_output=True, text=True, check=True, timeout=90,
             )
-            missing = list((expected - Counter(words(result.stdout))).elements())
+            missing = missing_words(expected, result.stdout)
             if len(missing) < len(best_missing) or not best_text:
                 best_missing, best_text = missing, result.stdout
             if not missing:
@@ -182,7 +194,9 @@ def enlarge_quote(card):
 
 
 def render(args, report):
-    expected = Counter(words(' '.join((args.text, args.author, args.source))))
+    from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+
+    expected = Counter(advice_words(args.text) + words(args.author) + words(args.source))
     parts = urlsplit(args.url)
     params = dict(parse_qsl(parts.fragment, keep_blank_values=True))
     params.update(theme='editorial', width='800')
@@ -285,12 +299,15 @@ def render(args, report):
                     card.screenshot(path=str(path), animations='disabled')
                     report['export_method'] = 'card-screenshot'
                 report.update(finalize_png(path, background))
-                missing, _ = ocr(path, expected)
+                missing, observed = ocr(path, expected)
+                report['ocr_text'] = observed
                 report['palavras_faltantes'] = missing
                 report['ocr_ok'] = not missing
                 if all(report[key] is True for key in CHECKS):
                     return 0
                 print(f'Tentativa {attempt}: validações={ {key: report[key] for key in CHECKS} }, faltantes={missing}', file=sys.stderr)
+            report['error'] = 'Validações reprovadas: ' + ', '.join(
+                key for key in CHECKS if report[key] is not True)
             return 1
         finally:
             browser.close()

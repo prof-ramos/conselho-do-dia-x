@@ -43,9 +43,34 @@ def atomic_json(path, value):
             temporary.unlink(missing_ok=True)
 
 
+def safe_error(message):
+    credentials = {value for key, value in os.environ.items() if value and
+                   any(part in key.upper() for part in
+                       ('SECRET', 'TOKEN', 'PASSWORD', 'API_KEY', 'CONSUMER_KEY', 'PRIVATE_KEY'))}
+    for secret in sorted(credentials, key=len, reverse=True):
+        message = message.replace(secret, '[REDACTED]')
+    return message[:2000]
+
+
+def render_failure(report):
+    details = {key: report[key] for key in ('error', 'ocr_text', 'palavras_faltantes')
+               if key in report}
+    details['validacoes_reprovadas'] = [key for key in
+        ('overflow_ok', 'ocr_ok', 'aspect_ok', 'size_ok', 'safe_area_ok', 'font_ok')
+        if report.get(key) is False]
+    return safe_error('Renderização falhou: ' + json.dumps(details, ensure_ascii=False))
+
+
 def run_json(script, arguments):
     result = subprocess.run([sys.executable, str(ROOT / script), *arguments],
                             capture_output=True, text=True, encoding='utf-8', cwd=ROOT)
+    if script == 'render.py':
+        try:
+            report = json.loads(result.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            report = None
+        if isinstance(report, dict) and (result.returncode or report.get('error')):
+            raise ValueError(render_failure(report))
     # Não repassar stdout/stderr dos filhos: podem conter dados sensíveis.
     if result.returncode:
         for line in reversed(result.stderr.splitlines()):
@@ -186,7 +211,7 @@ def execute(args):
                         'aspect_ok', 'size_ok', 'safe_area_ok', 'font_ok')
         if (any(rendered.get(key) is not True for key in image_fields[3:])
                 or not isinstance(rendered.get('path'), str)):
-            raise ValueError('Renderização não passou nas validações de imagem.')
+            raise ValueError(render_failure(rendered))
         alt_text = f'{n}. {text}\n{AUTHOR}\n{SOURCE}'
         if args.publish:
             intent['status'] = 'sending'
@@ -218,9 +243,9 @@ def execute(args):
             summary.update(id=posted['id'], url=posted['url'], alt_text_ok=posted['alt_text_ok'])
         print(json.dumps(summary, ensure_ascii=False))
         return 0
-    except (OSError, ValueError, TypeError, KeyError):
+    except (OSError, ValueError, TypeError, KeyError) as exc:
         print(json.dumps({'ok': False,
-                          'error': 'Falha na rotina. Se houver publication.pending.json, conferir o X antes de repetir.',
+                          'error': safe_error(str(exc)) + ' Se houver publication.pending.json, conferir o X antes de repetir.',
                           'publicacao_confirmada': published}, ensure_ascii=False), file=sys.stderr)
         return 1
 
