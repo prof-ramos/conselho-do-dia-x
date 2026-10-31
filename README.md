@@ -89,7 +89,9 @@ A rotina usa um lock local e registra `publication.pending.json` antes de acessa
 
 No GitHub Actions, a intenção é commitada e enviada a `main` **antes** do envio ao X. Se esse push falhar, não há publicação. Se o push final falhar, a intenção permanece no GitHub e impede repetir o post. O workflow tenta preservar o estado mesmo se a rotina falhar e disponibiliza `publication-recovery` como artefato. Não há repetição automática de chamadas de publicação.
 
-O fluxo só publica em `main`. PRs e pushes executam testes sem segredos; renderização e consulta da conta são executadas por agendamento ou despacho manual. `PUBLISH_ENABLED=true` habilita o envio agendado às 08h03 de São Paulo; o despacho manual continua com dry-run por padrão.
+O fluxo só publica em `main`. PRs e pushes executam testes sem segredos; renderização e consulta da conta são executadas somente por agendamento. `PUBLISH_ENABLED=true` habilita o envio agendado às 08h03 de São Paulo.
+
+Erros da API informam a etapa (`user_lookup`, `media_upload`, `media_metadata` ou `post_create`) sem expor credenciais. Consulte o saldo em **Billing → Credits** no console do X; a consulta automática de créditos não está habilitada porque as credenciais atuais não permitiram obter o token necessário.
 
 ### Recuperar uma tentativa interrompida
 
@@ -115,7 +117,7 @@ python3 -m unittest discover -s tests -v
 
 Os testes usam diretórios temporários, Git local e respostas simuladas nas fronteiras com o X/renderizador. Não exigem credenciais nem publicam. Cobrem texto alternativo, payload só com imagem, falhas de gravação, respostas incertas, recuperação, lock local e rejeição de pushes.
 
-`requirements-render.txt` fixa dependências diretas e transitivas da execução validada do nº 4. O workflow fixa também o commit do `serif-sh`. Para atualizar, altere as versões/commit explicitamente, execute os testes e valide um despacho com `dry_run=true` antes do envio seguinte. Não é necessário instalar dependências de renderização para executar os testes.
+`requirements-render.txt` fixa dependências diretas e transitivas da execução validada do nº 4. O workflow fixa também o commit do `serif-sh`. Para atualizar, altere as versões/commit explicitamente, execute os testes e valide localmente em modo dry-run antes do envio seguinte. Não é necessário instalar dependências de renderização para executar os testes.
 
 ## Agendamento
 

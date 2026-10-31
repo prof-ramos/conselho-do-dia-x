@@ -90,6 +90,8 @@ def run_json(script, arguments):
                         value = value.replace(secret, '[REDACTED]')
                     return value[:200]
 
+                if failure.get('stage') in ('validation', 'user_lookup', 'media_upload', 'media_metadata', 'post_create'):
+                    diagnostic['stage'] = failure['stage']
                 if isinstance(failure.get('error'), str):
                     diagnostic['error'] = safe_text(failure['error'])
                 if type(failure.get('status')) in (int, float):
