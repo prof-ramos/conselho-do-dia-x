@@ -49,6 +49,7 @@ class PostTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertFalse(any(url.endswith('/tweets') for url, _ in self.calls))
         self.assertNotIn('fake-credential-secret', out + err)
+        self.assertEqual(json.loads(err)['stage'], 'media_metadata')
 
     def test_missing_or_blank_alt_prevents_network(self):
         for args in [[], ['--alt-text', '   ']]:
@@ -78,7 +79,7 @@ class RunJsonTests(unittest.TestCase):
     def test_failed_child_emits_only_safe_redacted_diagnostic(self):
         credentials = {key: f'fixture-secret-{index}' for index, key in enumerate(post.KEYS)}
         secrets_text = ' '.join(credentials.values())
-        failure = {'error': 'API error ' + secrets_text, 'status': 403,
+        failure = {'error': 'API error ' + secrets_text, 'stage': 'media_metadata', 'status': 403,
                    'headers': {'Authorization': 'private-header'},
                    'body': json.dumps({'title': 'Forbidden', 'detail': secrets_text + 'x' * 250,
                                        'type': 'about:blank', 'other': 'private-body'})}
@@ -96,7 +97,8 @@ class RunJsonTests(unittest.TestCase):
         diagnostic = json.loads(lines[0].split(': ', 1)[1])
         self.assertEqual(diagnostic['status'], 403)
         self.assertEqual(diagnostic['body']['title'], 'Forbidden')
-        self.assertEqual(set(diagnostic), {'error', 'status', 'body'})
+        self.assertEqual(set(diagnostic), {'error', 'stage', 'status', 'body'})
+        self.assertEqual(diagnostic['stage'], 'media_metadata')
         self.assertEqual(set(diagnostic['body']), {'title', 'detail', 'type'})
         self.assertLessEqual(len(diagnostic['body']['detail']), 200)
         self.assertIn('[REDACTED]', diagnostic['error'])

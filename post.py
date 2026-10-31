@@ -116,6 +116,7 @@ def main(argv=None):
     mode.add_argument('--publish', action='store_true', help='Envia a imagem e publica o post.')
     args = parser.parse_args(argv)
     credentials = {key: os.environ.get(key, '') for key in KEYS}
+    stage = 'validation'
     try:
         text = args.text.replace('\\n', '\n')
         length = text_length(text)
@@ -144,6 +145,7 @@ def main(argv=None):
         if not image.startswith(PNG_SIGNATURE):
             raise ValueError('Assinatura PNG inválida.')
         credentials = load_credentials(args.env_file)
+        stage = 'user_lookup'
         result = request_json('GET', 'https://api.x.com/2/users/me?user.fields=username,name', credentials)
         user = {key: result['data'][key] for key in ('id', 'username', 'name')}
         if not args.publish:
@@ -153,6 +155,7 @@ def main(argv=None):
                       'image_only': not bool(text)}
         else:
             body, content_type = multipart(image)
+            stage = 'media_upload'
             uploaded = request_json('POST', 'https://api.x.com/2/media/upload', credentials, body, content_type)
             data = uploaded.get('data', {})
             media_id = (data.get('id') if isinstance(data, dict) else None) or uploaded.get('id') or uploaded.get('media_id_string')
@@ -160,11 +163,13 @@ def main(argv=None):
                 raise ValueError('Resposta do upload sem identificador de mídia.')
             media_id = str(media_id)
             metadata = {'id': media_id, 'metadata': {'alt_text': {'text': alt_text}}}
+            stage = 'media_metadata'
             request_json('POST', 'https://api.x.com/2/media/metadata', credentials,
                          json.dumps(metadata).encode(), 'application/json')
             alt_text_ok = True
             payload['media']['media_ids'] = [media_id]
             body = json.dumps(payload).encode()
+            stage = 'post_create'
             posted = request_json('POST', 'https://api.x.com/2/tweets', credentials, body, 'application/json')
             post_id = posted['data']['id']
             output = {'mode': 'publish', 'id': post_id, 'url': f'https://x.com/{user["username"]}/status/{post_id}',
@@ -181,6 +186,7 @@ def main(argv=None):
         output = {'error': redact(str(error), credentials)}
     except (KeyError, TypeError):
         output = {'error': 'Resposta da API em formato inesperado.'}
+    output['stage'] = stage
     print(redact(json.dumps(output, ensure_ascii=False), credentials), file=sys.stderr)
     return 1
 
