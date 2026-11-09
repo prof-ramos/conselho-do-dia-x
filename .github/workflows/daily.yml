@@ -1,6 +1,12 @@
 name: Conselho do dia
 
 on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Generate and validate without publishing
+        type: boolean
+        default: true
   schedule:
     - cron: '3 11 * * *'
   push:
@@ -33,7 +39,7 @@ jobs:
 
   daily:
     needs: tests
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
     runs-on: ubuntu-24.04
@@ -43,11 +49,12 @@ jobs:
         id: mode
         env:
           EVENT: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
           PUBLISH_ENABLED: ${{ vars.PUBLISH_ENABLED }}
           REF: ${{ github.ref }}
         run: |
           mode=dry-run
-          if [[ "$EVENT" == schedule && "$PUBLISH_ENABLED" == true ]]; then
+          if [[ "$EVENT" == workflow_dispatch && "$DRY_RUN" == false ]] || [[ "$EVENT" == schedule && "$PUBLISH_ENABLED" == true ]]; then
             mode=publish
           fi
           if [[ "$mode" == publish && "$REF" != refs/heads/main ]]; then
