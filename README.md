@@ -89,7 +89,9 @@ A rotina usa um lock local e registra `publication.pending.json` antes de acessa
 
 No GitHub Actions, a intenção é commitada e enviada a `main` **antes** do envio ao X. Se esse push falhar, não há publicação. Se o push final falhar, a intenção permanece no GitHub e impede repetir o post. O workflow tenta preservar o estado mesmo se a rotina falhar e disponibiliza `publication-recovery` como artefato. Não há repetição automática de chamadas de publicação.
 
-O fluxo só publica em `main`. PRs e pushes executam testes sem segredos; renderização e consulta da conta são executadas somente por agendamento. `PUBLISH_ENABLED=true` habilita o envio agendado às 08h03 de São Paulo.
+O fluxo só publica em `main`. PRs e pushes executam testes sem segredos; renderização e consulta da conta são executadas por agendamento ou disparo manual (`workflow_dispatch`). `PUBLISH_ENABLED=true` habilita o envio agendado às 08h03 de São Paulo. O disparo manual usa `dry_run=true` por padrão e só publica com `dry_run=false` em `main`.
+
+A verificação de envio no mesmo dia em `America/Sao_Paulo`, o bloqueio por `publication.pending.json` e a concorrência do workflow (`conselho-do-dia`, sem cancelar a execução em andamento) impedem posts duplicados quando o agendamento e o disparo manual se sobrepõem.
 
 Erros da API informam a etapa (`user_lookup`, `media_upload`, `media_metadata` ou `post_create`) sem expor credenciais. Consulte o saldo em **Billing → Credits** no console do X; a consulta automática de créditos não está habilitada porque as credenciais atuais não permitiram obter o token necessário.
 
